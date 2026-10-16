@@ -1,0 +1,20 @@
+# Binary file hasil build
+# Binary Go
+server
+teach_partner_dev
+*.exe
+*.test
+*.out
+
+# Build output
+/bin/
+/dist/
+
+# Env
+.env
+*.log
+
+# IDE
+.idea/
+.vscode/
+.DS_Store
