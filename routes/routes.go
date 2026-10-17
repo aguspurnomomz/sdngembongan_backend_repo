@@ -1488,7 +1488,7 @@ func SetupRoutes(r *gin.Engine) {
 			ipClient := c.ClientIP()
 			userAgent := c.Request.UserAgent()
 			pesanWA := fmt.Sprintf(
-				"INFORMASI LOGIN SUPERADMIN\n\nAkun Superadmin Anda baru saja masuk pada %s.\n\nDetail Akses:\n- Lokasi (Koordinat): %s\n- Alamat IP: %s\n- Perangkat: %s\n\nJika ini bukan Anda, segera amankan akun Anda!",
+				"INFORMASI LOGIN SUPERADMIN\n\nAkun Superadmin Anda baru saja masuk pada %s.\n\nDetail Akses:\n- Lokasi (Koordinat): %s\n- Alamat IP: %s\n- Perangkat: %s\n\nJika ini bukan Anda, segera amankan akun Anda! \n\nCopyright © 2025 - 2026 SkoolaGo. All Rights Reserved.",
 				time.Now().Format("02-01-2006 15:04:05"),
 				mapsLink, ipClient, userAgent,
 			)
