@@ -50,8 +50,7 @@ func main() {
 		AllowOrigins: []string{
 			"http://localhost:5173",                 
 			"http://localhost:3000",                 
-			"https://development.skoolago.com", 
-			"https://skoolago.my.id", 
+			"https://portalpendidikan.sdngembongan.id", 
 		},
 		AllowMethods: []string{"GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"}, 
 		AllowHeaders: []string{"Origin", "Content-Type", "Authorization"},
