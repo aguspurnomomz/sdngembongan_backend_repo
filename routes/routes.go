@@ -210,6 +210,7 @@ type CreateTeacherRequest struct {
     Password     string `json:"password" binding:"required,min=6"`
     NIP          string `json:"nip"`
     JenisKelamin string `json:"jenis_kelamin" binding:"omitempty,oneof=L P"`
+	NoWhatsApp   string `json:"no_whatsapp"`
     RoleInSchool string `json:"role_in_school"`  
     Notes        string `json:"notes"`
 }
@@ -2341,7 +2342,6 @@ func SetupRoutes(r *gin.Engine) {
 			})
 		})
 
-	
 		// Endpoint Nonaktifkan/Aktifkan Sekolah (Soft Disable)
 		adminApi.PATCH("/schools/:id/status", func(c *gin.Context) {
 			// adminIDVal, _ := c.Get("admin_id")
@@ -2507,6 +2507,189 @@ func SetupRoutes(r *gin.Engine) {
 			})
 		})
 
+		// ==========================================
+		// SCHOOL ROLES (Peran di Sekolah) — Superadmin
+		// ==========================================
+
+		// GET /api/superadmin/school-roles
+		adminApi.GET("/school-roles", func(c *gin.Context) {
+			includeInactive := c.Query("include_inactive") == "true"
+
+			query := `
+				SELECT id, code, label, COALESCE(description, ''), is_active, sort_order, created_at, updated_at
+				FROM school_roles
+			`
+			if !includeInactive {
+				query += ` WHERE is_active = TRUE`
+			}
+			query += ` ORDER BY sort_order ASC, label ASC`
+
+			rows, err := database.DB.Query(query)
+			if err != nil {
+				c.JSON(http.StatusInternalServerError, gin.H{"error": "Gagal memuat daftar peran: " + err.Error()})
+				return
+			}
+			defer rows.Close()
+
+			type RoleItem struct {
+				ID          string    `json:"id"`
+				Code        string    `json:"code"`
+				Label       string    `json:"label"`
+				Description string    `json:"description"`
+				IsActive    bool      `json:"is_active"`
+				SortOrder   int       `json:"sort_order"`
+				CreatedAt   time.Time `json:"created_at"`
+				UpdatedAt   time.Time `json:"updated_at"`
+			}
+
+			list := []RoleItem{}
+			for rows.Next() {
+				var r RoleItem
+				var desc sql.NullString
+				if err := rows.Scan(&r.ID, &r.Code, &r.Label, &desc, &r.IsActive, &r.SortOrder, &r.CreatedAt, &r.UpdatedAt); err == nil {
+					r.Description = desc.String
+					list = append(list, r)
+				}
+			}
+
+			c.JSON(http.StatusOK, gin.H{"total": len(list), "roles": list})
+		})
+
+		// POST /api/superadmin/school-roles
+		adminApi.POST("/school-roles", func(c *gin.Context) {
+			var req struct {
+				Code        string `json:"code" binding:"required,min=2,max=50"`
+				Label       string `json:"label" binding:"required,min=2,max=100"`
+				Description string `json:"description"`
+				SortOrder   int    `json:"sort_order"`
+				IsActive    *bool  `json:"is_active"`
+			}
+			if err := c.ShouldBindJSON(&req); err != nil {
+				c.JSON(http.StatusBadRequest, gin.H{"error": "Format tidak valid: " + err.Error()})
+				return
+			}
+
+			// Normalize code: lowercase, ganti spasi jadi underscore
+			code := strings.ToLower(strings.TrimSpace(req.Code))
+			code = strings.ReplaceAll(code, " ", "_")
+
+			isActive := true
+			if req.IsActive != nil {
+				isActive = *req.IsActive
+			}
+
+			// Cek duplikat code
+			var existingID string
+			err := database.DB.QueryRow(`SELECT id FROM school_roles WHERE code = $1`, code).Scan(&existingID)
+			if err == nil && existingID != "" {
+				c.JSON(http.StatusConflict, gin.H{"error": "Kode peran sudah dipakai"})
+				return
+			}
+
+			var roleID string
+			err = database.DB.QueryRow(`
+				INSERT INTO school_roles (code, label, description, is_active, sort_order)
+				VALUES ($1, $2, NULLIF($3, ''), $4, $5)
+				RETURNING id
+			`, code, strings.TrimSpace(req.Label), req.Description, isActive, req.SortOrder).Scan(&roleID)
+
+			if err != nil {
+				c.JSON(http.StatusInternalServerError, gin.H{"error": "Gagal menyimpan peran: " + err.Error()})
+				return
+			}
+
+			if adminID, ok := getAdminIDFromContext(c); ok {
+				logSuperAdminActivity(adminID, "CREATE_SCHOOL_ROLE", c.ClientIP(),
+					c.Request.UserAgent(), "",
+					fmt.Sprintf("Menambahkan peran: %s (%s)", req.Label, code))
+			}
+
+			c.JSON(http.StatusCreated, gin.H{"message": "Peran berhasil ditambahkan", "id": roleID, "code": code})
+		})
+
+		// PUT /api/superadmin/school-roles/:id
+		adminApi.PUT("/school-roles/:id", func(c *gin.Context) {
+			roleID := c.Param("id")
+
+			var req struct {
+				Label       string `json:"label"`
+				Description string `json:"description"`
+				SortOrder   *int   `json:"sort_order"`
+				IsActive    *bool  `json:"is_active"`
+			}
+			if err := c.ShouldBindJSON(&req); err != nil {
+				c.JSON(http.StatusBadRequest, gin.H{"error": "Format tidak valid: " + err.Error()})
+				return
+			}
+
+			result, err := database.DB.Exec(`
+				UPDATE school_roles SET
+					label       = COALESCE(NULLIF($1, ''), label),
+					description = NULLIF($2, ''),
+					sort_order  = COALESCE($3, sort_order),
+					is_active   = COALESCE($4, is_active),
+					updated_at  = NOW()
+				WHERE id = $5
+			`, strings.TrimSpace(req.Label), req.Description, req.SortOrder, req.IsActive, roleID)
+
+			if err != nil {
+				c.JSON(http.StatusInternalServerError, gin.H{"error": "Gagal memperbarui peran: " + err.Error()})
+				return
+			}
+
+			affected, _ := result.RowsAffected()
+			if affected == 0 {
+				c.JSON(http.StatusNotFound, gin.H{"error": "Peran tidak ditemukan"})
+				return
+			}
+
+			c.JSON(http.StatusOK, gin.H{"message": "Peran berhasil diperbarui"})
+		})
+
+		// DELETE /api/superadmin/school-roles/:id
+		adminApi.DELETE("/school-roles/:id", func(c *gin.Context) {
+			roleID := c.Param("id")
+
+			// Ambil code dulu untuk cek pemakaian
+			var code, label string
+			err := database.DB.QueryRow(`SELECT code, label FROM school_roles WHERE id = $1`, roleID).Scan(&code, &label)
+			if err != nil {
+				c.JSON(http.StatusNotFound, gin.H{"error": "Peran tidak ditemukan"})
+				return
+			}
+
+			// Cek apakah masih dipakai di school_members
+			var usedCount int
+			_ = database.DB.QueryRow(
+				`SELECT COUNT(*) FROM school_members WHERE role_in_school = $1`,
+				code,
+			).Scan(&usedCount)
+
+			if usedCount > 0 {
+				c.JSON(http.StatusConflict, gin.H{
+					"error": fmt.Sprintf(
+						"Peran ini masih dipakai oleh %d anggota. Nonaktifkan saja, atau ubah dulu peran mereka.",
+						usedCount,
+					),
+				})
+				return
+			}
+
+			_, err = database.DB.Exec(`DELETE FROM school_roles WHERE id = $1`, roleID)
+			if err != nil {
+				c.JSON(http.StatusInternalServerError, gin.H{"error": "Gagal menghapus peran: " + err.Error()})
+				return
+			}
+
+			if adminID, ok := getAdminIDFromContext(c); ok {
+				logSuperAdminActivity(adminID, "DELETE_SCHOOL_ROLE", c.ClientIP(),
+					c.Request.UserAgent(), "",
+					fmt.Sprintf("Menghapus peran: %s (%s)", label, code))
+			}
+
+			c.JSON(http.StatusOK, gin.H{"message": "Peran berhasil dihapus"})
+		})
+
 		// adminApi.GET("/academic-years", func(c *gin.Context) {
 		// 	adminID := c.MustGet("admin_id") // Atau ambil berdasarkan sesi school_admin yang login
 
@@ -2598,6 +2781,114 @@ func SetupRoutes(r *gin.Engine) {
 
 		// 	c.JSON(http.StatusOK, gin.H{"message": "Tahun akademik aktif berhasil diperbarui"})
 		// })
+
+		// GET /api/superadmin/permissions
+		adminApi.GET("/permissions", func(c *gin.Context) {
+			rows, err := database.DB.Query(`
+				SELECT id, code, label, module, COALESCE(description, '')
+				FROM permissions
+				ORDER BY module ASC, label ASC
+			`)
+			if err != nil {
+				c.JSON(http.StatusInternalServerError, gin.H{"error": "Gagal memuat permissions: " + err.Error()})
+				return
+			}
+			defer rows.Close()
+
+			type PermissionItem struct {
+				ID          string `json:"id"`
+				Code        string `json:"code"`
+				Label       string `json:"label"`
+				Module      string `json:"module"`
+				Description string `json:"description"`
+			}
+
+			list := []PermissionItem{}
+			for rows.Next() {
+				var p PermissionItem
+				if err := rows.Scan(&p.ID, &p.Code, &p.Label, &p.Module, &p.Description); err == nil {
+					list = append(list, p)
+				}
+			}
+			c.JSON(http.StatusOK, gin.H{"permissions": list})
+		})
+
+		// GET /api/superadmin/school-roles/:id/permissions
+		adminApi.GET("/school-roles/:id/permissions", func(c *gin.Context) {
+			roleID := c.Param("id")
+
+			rows, err := database.DB.Query(`
+				SELECT permission_id 
+				FROM school_role_permissions 
+				WHERE role_id = $1
+			`, roleID)
+			if err != nil {
+				c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+				return
+			}
+			defer rows.Close()
+
+			var permissionIDs []string
+			for rows.Next() {
+				var pid string
+				if err := rows.Scan(&pid); err == nil {
+					permissionIDs = append(permissionIDs, pid)
+				}
+			}
+
+			c.JSON(http.StatusOK, gin.H{"permission_ids": permissionIDs})
+		})
+
+		// PUT /api/superadmin/school-roles/:id/permissions
+		adminApi.PUT("/school-roles/:id/permissions", func(c *gin.Context) {
+			roleID := c.Param("id")
+
+			// Cek apakah role ini is_system (tidak boleh diubah)
+			var isSystem bool
+			err := database.DB.QueryRow(`SELECT is_system FROM school_roles WHERE id = $1`, roleID).Scan(&isSystem)
+			if err != nil {
+				c.JSON(http.StatusNotFound, gin.H{"error": "Role tidak ditemukan"})
+				return
+			}
+			if isSystem {
+				c.JSON(http.StatusForbidden, gin.H{"error": "Role sistem tidak dapat diubah permission-nya"})
+				return
+			}
+
+			var req struct {
+				PermissionIDs []string `json:"permission_ids"`
+			}
+			if err := c.ShouldBindJSON(&req); err != nil {
+				c.JSON(http.StatusBadRequest, gin.H{"error": "Format tidak valid: " + err.Error()})
+				return
+			}
+
+			tx, err := database.DB.Begin()
+			if err != nil {
+				c.JSON(http.StatusInternalServerError, gin.H{"error": "Gagal mulai transaksi"})
+				return
+			}
+			defer tx.Rollback()
+
+			// Hapus permission lama
+			_, _ = tx.Exec(`DELETE FROM school_role_permissions WHERE role_id = $1`, roleID)
+
+			// Insert permission baru
+			for _, pid := range req.PermissionIDs {
+				_, _ = tx.Exec(`
+					INSERT INTO school_role_permissions (role_id, permission_id)
+					VALUES ($1, $2)
+					ON CONFLICT DO NOTHING
+				`, roleID, pid)
+			}
+
+			if err := tx.Commit(); err != nil {
+				c.JSON(http.StatusInternalServerError, gin.H{"error": "Gagal commit"})
+				return
+			}
+
+			c.JSON(http.StatusOK, gin.H{"message": "Permission role berhasil diperbarui"})
+		})
 	}
 
 	// ==========================================
@@ -3262,206 +3553,200 @@ func SetupRoutes(r *gin.Engine) {
 		})
 	}
 
-	// ==========================================
-	// --- Route Protected ---
+	// Route Protected 
 	// Hanya guru yang login yang bisa mengakses data miliknya sendiri
-	// ==========================================
 	api := r.Group("/api")
 	api.Use(middleware.AuthMiddleware())
 	{
 
-		api.GET("/auth/check-role", func(c *gin.Context) {
-			userID, exists := c.Get("user_id")
-			if !exists {
-				c.JSON(http.StatusUnauthorized, gin.H{"error": "Unauthorized"})
-				return
-			}
+		// api.GET("/auth/check-role", func(c *gin.Context) {
+		// 	userID, exists := c.Get("user_id")
+		// 	if !exists {
+		// 		c.JSON(http.StatusUnauthorized, gin.H{"error": "Unauthorized"})
+		// 		return
+		// 	}
 
-			var userIDStr string
-			switch v := userID.(type) {
-			case string:
-				userIDStr = v
-			case fmt.Stringer:
-				userIDStr = v.String()
-			default:
-				userIDStr = fmt.Sprintf("%v", v)
-			}
+		// 	var userIDStr string
+		// 	switch v := userID.(type) {
+		// 	case string:
+		// 		userIDStr = v
+		// 	case fmt.Stringer:
+		// 		userIDStr = v.String()
+		// 	default:
+		// 		userIDStr = fmt.Sprintf("%v", v)
+		// 	}
 
-			fmt.Printf("[check-role] userID=%s\n", userIDStr)
+		// 	fmt.Printf("[check-role] userID=%s\n", userIDStr)
 
-			var userEmail string
-			err := database.DB.QueryRow(
-				`SELECT COALESCE(email, '') FROM auth.users WHERE id = $1`,
-				userIDStr,
-			).Scan(&userEmail)
+		// 	var userEmail string
+		// 	err := database.DB.QueryRow(
+		// 		`SELECT COALESCE(email, '') FROM auth.users WHERE id = $1`,
+		// 		userIDStr,
+		// 	).Scan(&userEmail)
 
-			if err != nil {
-				fmt.Printf("[check-role] Gagal ambil email dari auth.users: %v\n", err)
-				if emailFromCtx, ok := c.Get("email"); ok {
-					userEmail, _ = emailFromCtx.(string)
-				}
-			}
-			fmt.Printf("[check-role] email=%s\n", userEmail)
+		// 	if err != nil {
+		// 		fmt.Printf("[check-role] Gagal ambil email dari auth.users: %v\n", err)
+		// 		if emailFromCtx, ok := c.Get("email"); ok {
+		// 			userEmail, _ = emailFromCtx.(string)
+		// 		}
+		// 	}
+		// 	fmt.Printf("[check-role] email=%s\n", userEmail)
 
 	
-			// apakah user adalah school_admin
-			// ==========================================
-			var userType string
-			var schoolActive bool
-			var schoolID sql.NullString
+		// 	var userType string
+		// 	var schoolActive bool
+		// 	var schoolID sql.NullString
 
-			err = database.DB.QueryRow(`
-				SELECT 
-					sa.user_type,
-					COALESCE(s.is_active, false) AS school_active,
-					sa.school_id
-				FROM school_admins sa
-				LEFT JOIN schools s ON sa.school_id = s.id
-				WHERE (sa.id = $1 OR (sa.email <> '' AND sa.email = $2)) 
-				AND sa.is_active = TRUE
-			`, userIDStr, userEmail).Scan(&userType, &schoolActive, &schoolID)
+		// 	err = database.DB.QueryRow(`
+		// 		SELECT 
+		// 			sa.user_type,
+		// 			COALESCE(s.is_active, false) AS school_active,
+		// 			sa.school_id
+		// 		FROM school_admins sa
+		// 		LEFT JOIN schools s ON sa.school_id = s.id
+		// 		WHERE (sa.id = $1 OR (sa.email <> '' AND sa.email = $2)) 
+		// 		AND sa.is_active = TRUE
+		// 	`, userIDStr, userEmail).Scan(&userType, &schoolActive, &schoolID)
 
-			// *artifact 14 oct 2026
-			// if err == nil {
-			// 	fmt.Printf("[check-role] User adalah school_admin (%s), school_active=%v\n", userType, schoolActive)
+		// 	// *artifact 14 oct 2026
+		// 	// if err == nil {
+		// 	// 	fmt.Printf("[check-role] User adalah school_admin (%s), school_active=%v\n", userType, schoolActive)
 
-			// 	// Pastikan row profiles juga ada
-			// 	_, _ = database.DB.Exec(`
-			// 		INSERT INTO profiles (id, email_sekolah, token_balance, is_active, updated_at)
-			// 		VALUES ($1, $2, 0, TRUE, NOW())
-			// 		ON CONFLICT (id) DO NOTHING
-			// 	`, userIDStr, userEmail)
+		// 	// 	// Pastikan row profiles juga ada
+		// 	// 	_, _ = database.DB.Exec(`
+		// 	// 		INSERT INTO profiles (id, email_sekolah, token_balance, is_active, updated_at)
+		// 	// 		VALUES ($1, $2, 0, TRUE, NOW())
+		// 	// 		ON CONFLICT (id) DO NOTHING
+		// 	// 	`, userIDStr, userEmail)
 
-			// 	c.JSON(http.StatusOK, gin.H{
-			// 		"role":            userType,
-			// 		"school_inactive": !schoolActive, // ← Flag baru
-			// 		"school_id":       schoolID.String,
-			// 	})
-			// 	return
-			// }
+		// 	// 	c.JSON(http.StatusOK, gin.H{
+		// 	// 		"role":            userType,
+		// 	// 		"school_inactive": !schoolActive, // ← Flag baru
+		// 	// 		"school_id":       schoolID.String,
+		// 	// 	})
+		// 	// 	return
+		// 	// }
 
-			if err == nil {
-				fmt.Printf("[check-role] User adalah school_admin (%s), school_active=%v\n", userType, schoolActive)
+		// 	if err == nil {
+		// 		fmt.Printf("[check-role] User adalah school_admin (%s), school_active=%v\n", userType, schoolActive)
 
-				// Pastikan row profiles ada dengan metadata admin yang BENAR
-				// (bukan default 'independent_teacher'/'b2c')
-				_, profErr := database.DB.Exec(`
-					INSERT INTO profiles (
-						id, email_sekolah, token_balance, is_active,
-						role, teacher_type, school_id, registration_source, updated_at
-					)
-					VALUES ($1, $2, 0, TRUE, 'school_admin', 'b2b', $3, 'created_by_superadmin', NOW())
-					ON CONFLICT (id) DO UPDATE SET
-						role = 'school_admin',
-						teacher_type = 'b2b',
-						school_id = COALESCE(EXCLUDED.school_id, profiles.school_id),
-						registration_source = 'created_by_superadmin',
-						updated_at = NOW()
-				`, userIDStr, userEmail, schoolID.String)
+		// 		// Pastikan row profiles ada dengan metadata admin yang BENAR
+		// 		// (bukan default 'independent_teacher'/'b2c')
+		// 		_, profErr := database.DB.Exec(`
+		// 			INSERT INTO profiles (
+		// 				id, email_sekolah, token_balance, is_active,
+		// 				role, teacher_type, school_id, registration_source, updated_at
+		// 			)
+		// 			VALUES ($1, $2, 0, TRUE, 'school_admin', 'b2b', $3, 'created_by_superadmin', NOW())
+		// 			ON CONFLICT (id) DO UPDATE SET
+		// 				role = 'school_admin',
+		// 				teacher_type = 'b2b',
+		// 				school_id = COALESCE(EXCLUDED.school_id, profiles.school_id),
+		// 				registration_source = 'created_by_superadmin',
+		// 				updated_at = NOW()
+		// 		`, userIDStr, userEmail, schoolID.String)
 
-				if profErr != nil {
-					fmt.Printf("[check-role] Gagal upsert profile admin: %v\n", profErr)
-				} else {
-					fmt.Printf("[check-role] Profile admin upserted (school_id=%s)\n", schoolID.String)
-				}
+		// 		if profErr != nil {
+		// 			fmt.Printf("[check-role] Gagal upsert profile admin: %v\n", profErr)
+		// 		} else {
+		// 			fmt.Printf("[check-role] Profile admin upserted (school_id=%s)\n", schoolID.String)
+		// 		}
 
-				c.JSON(http.StatusOK, gin.H{
-					"role":            userType,
-					"school_inactive": !schoolActive,
-					"school_id":       schoolID.String,
-				})
-				return
-			}
+		// 		c.JSON(http.StatusOK, gin.H{
+		// 			"role":            userType,
+		// 			"school_inactive": !schoolActive,
+		// 			"school_id":       schoolID.String,
+		// 		})
+		// 		return
+		// 	}
 
-			// ==========================================
-			// 3. Upsert sebagai teacher
-			// ==========================================
-			// fmt.Println("[check-role] Bukan school_admin, upsert sebagai teacher")
+		// 	// Upsert sebagai teacher
 
-			// _, err = database.DB.Exec(`
-			// 	INSERT INTO profiles (id, email_sekolah, token_balance, is_active, updated_at)
-			// 	VALUES ($1, $2, 0, TRUE, NOW())
-			// 	ON CONFLICT (id) DO NOTHING
-			// `, userIDStr, userEmail)  
+		// 	// fmt.Println("[check-role] Bukan school_admin, upsert sebagai teacher")
 
-			// if err != nil {
-			// 	fmt.Printf("[check-role] Gagal upsert profile: %v\n", err)
-			// } else {
-			// 	fmt.Println("[check-role] Upsert profile OK")
-			// }
+		// 	// _, err = database.DB.Exec(`
+		// 	// 	INSERT INTO profiles (id, email_sekolah, token_balance, is_active, updated_at)
+		// 	// 	VALUES ($1, $2, 0, TRUE, NOW())
+		// 	// 	ON CONFLICT (id) DO NOTHING
+		// 	// `, userIDStr, userEmail)  
 
-			// c.JSON(http.StatusOK, gin.H{"role": "teacher"})
+		// 	// if err != nil {
+		// 	// 	fmt.Printf("[check-role] Gagal upsert profile: %v\n", err)
+		// 	// } else {
+		// 	// 	fmt.Println("[check-role] Upsert profile OK")
+		// 	// }
 
-			// ==========================================
-			// 3. Upsert sebagai teacher
-			// ==========================================
-			fmt.Println("[check-role] Bukan school_admin, cek/upsert sebagai teacher")
+		// 	// c.JSON(http.StatusOK, gin.H{"role": "teacher"})
 
-			// Cek apakah profile sudah ada
-			var existingProfile bool
-			err = database.DB.QueryRow(`
-				SELECT EXISTS(SELECT 1 FROM profiles WHERE id = $1)
-			`, userIDStr).Scan(&existingProfile)
+		// 	fmt.Println("[check-role] Bukan school_admin, cek/upsert sebagai teacher")
 
-			if !existingProfile {
-				// Cek apakah user ini diundang sebagai guru di sekolah
-				// (misal dari school_members atau invitation)
-				_, err = database.DB.Exec(`
-					INSERT INTO profiles (id, email_sekolah, token_balance, is_active, teacher_type, registration_source, updated_at)
-					VALUES ($1, $2, 2, TRUE, 'b2c', 'self_register', NOW())
-					ON CONFLICT (id) DO NOTHING
-				`, userIDStr, userEmail)
+		// 	var existingProfile bool
+		// 	err = database.DB.QueryRow(`
+		// 		SELECT EXISTS(SELECT 1 FROM profiles WHERE id = $1)
+		// 	`, userIDStr).Scan(&existingProfile)
 
-				if err != nil {
-					fmt.Printf("[check-role] Gagal upsert profile: %v\n", err)
-				} else {
-					fmt.Println("[check-role] Upsert profile OK (new user)")
-				}
-			} else {
-				fmt.Println("[check-role] Profile sudah ada, skip insert")
-			}
+		// 	if !existingProfile {
+		// 		_, err = database.DB.Exec(`
+		// 			INSERT INTO profiles (id, email_sekolah, token_balance, is_active, teacher_type, registration_source, updated_at)
+		// 			VALUES ($1, $2, 2, TRUE, 'b2c', 'self_register', NOW())
+		// 			ON CONFLICT (id) DO NOTHING
+		// 		`, userIDStr, userEmail)
 
-			// Ambil teacher_type
-			var teacherType string
-			_ = database.DB.QueryRow(`
-				SELECT COALESCE(teacher_type, 'b2c') FROM profiles WHERE id = $1
-			`, userIDStr).Scan(&teacherType)
+		// 		if err != nil {
+		// 			fmt.Printf("[check-role] Gagal upsert profile: %v\n", err)
+		// 		} else {
+		// 			fmt.Println("[check-role] Upsert profile OK (new user)")
+		// 		}
+		// 	} else {
+		// 		fmt.Println("[check-role] Profile sudah ada, skip insert")
+		// 	}
 
-			// Ambil daftar membership sekolah (kalau ada)
-			type MembershipInfo struct {
-				SchoolID     string `json:"school_id"`
-				SchoolName   string `json:"school_name"`
-				RoleInSchool string `json:"role_in_school"`
-				IsActive     bool   `json:"is_active"`
-			}
+		// 	var teacherType string
+		// 	_ = database.DB.QueryRow(`
+		// 		SELECT COALESCE(teacher_type, 'b2c') FROM profiles WHERE id = $1
+		// 	`, userIDStr).Scan(&teacherType)
 
-			var memberships []MembershipInfo
-			rows, err := database.DB.Query(`
-				SELECT sm.school_id, s.school_name, sm.role_in_school, sm.is_active
-				FROM school_members sm
-				JOIN schools s ON sm.school_id = s.id
-				WHERE sm.user_id = $1 AND sm.left_at IS NULL
-			`, userIDStr)
+		// 	// Ambil daftar membership sekolah (kalau ada)
+		// 	type MembershipInfo struct {
+		// 		SchoolID     string `json:"school_id"`
+		// 		SchoolName   string `json:"school_name"`
+		// 		RoleInSchool string `json:"role_in_school"`
+		// 		IsActive     bool   `json:"is_active"`
+		// 	}
 
-			if err == nil {
-				defer rows.Close()
-				for rows.Next() {
-					var m MembershipInfo
-					if err := rows.Scan(&m.SchoolID, &m.SchoolName, &m.RoleInSchool, &m.IsActive); err == nil {
-						memberships = append(memberships, m)
-					}
-				}
-			}
+		// 	var memberships []MembershipInfo
+		// 	rows, err := database.DB.Query(`
+		// 		SELECT sm.school_id, s.school_name, sm.role_in_school, sm.is_active
+		// 		FROM school_members sm
+		// 		JOIN schools s ON sm.school_id = s.id
+		// 		WHERE sm.user_id = $1 AND sm.left_at IS NULL
+		// 	`, userIDStr)
 
-			c.JSON(http.StatusOK, gin.H{
-				"role":         "teacher",
-				"teacher_type": teacherType,
-				"memberships":  memberships,
-				"school_inactive": false,
-			})
+		// 	if err == nil {
+		// 		defer rows.Close()
+		// 		for rows.Next() {
+		// 			var m MembershipInfo
+		// 			if err := rows.Scan(&m.SchoolID, &m.SchoolName, &m.RoleInSchool, &m.IsActive); err == nil {
+		// 				memberships = append(memberships, m)
+		// 			}
+		// 		}
+		// 	}
+
+		// 	c.JSON(http.StatusOK, gin.H{
+		// 		"role":         "teacher",
+		// 		"teacher_type": teacherType,
+		// 		"memberships":  memberships,
+		// 		"school_inactive": false,
+		// 	})
 
 			
-		})
+		// })
+
+		api.GET("/auth/check-role", CheckRoleHandler)
+		// SCHOOL ADMIN MANAGE TEACHER ROLES
+		api.POST("/school-admin/teachers/:id/roles", AssignRoleToTeacher)
+		api.DELETE("/school-admin/teachers/:id/roles/:roleId", RemoveRoleFromTeacher)
+		api.GET("/school-admin/teachers/:id/roles", GetTeacherRoles)
 
 		api.POST("/auth/notify-password-changedNotUssed", func(c *gin.Context) {
 			userID, exists := c.Get("user_id")
@@ -7826,6 +8111,46 @@ func SetupRoutes(r *gin.Engine) {
 			})
 		})
 
+		api.GET("/school-admin/school-roles", func(c *gin.Context) {
+			// Validasi apakah user adalah admin sekolah aktif
+			_, err := getSchoolIDFromUser(c)
+			if err != nil {
+				c.JSON(http.StatusForbidden, gin.H{"error": err.Error()})
+				return
+			}
+
+			rows, err := database.DB.Query(`
+				SELECT code, label 
+				FROM school_roles 
+				WHERE is_active = TRUE 
+				ORDER BY sort_order ASC, label ASC
+			`)
+			if err != nil {
+				c.JSON(http.StatusInternalServerError, gin.H{"error": "Gagal memuat daftar peran: " + err.Error()})
+				return
+			}
+			defer rows.Close()
+
+			type RoleOption struct {
+				Code  string `json:"code"`
+				Label string `json:"label"`
+			}
+
+			var roles []RoleOption
+			for rows.Next() {
+				var r RoleOption
+				if err := rows.Scan(&r.Code, &r.Label); err == nil {
+					roles = append(roles, r)
+				}
+			}
+
+			// Pastikan mengembalikan array kosong, bukan null, jika tidak ada data
+			if roles == nil {
+				roles = []RoleOption{}
+			}
+
+			c.JSON(http.StatusOK, gin.H{"roles": roles})
+		})
 		// ==========================================
 		// SCHOOL ADMIN: Buat akun guru baru (tanpa email)
 		// POST /api/school-admin/teachers
@@ -8005,18 +8330,19 @@ func SetupRoutes(r *gin.Engine) {
 			var teacherID string
 			err = database.DB.QueryRow(`
 				INSERT INTO teachers (
-					user_id, school_id, nama_lengkap, nip, jenis_kelamin, is_active
+					user_id, school_id, nama_lengkap, nip, jenis_kelamin, no_whatsapp, is_active
 				)
-				VALUES ($1, $2, $3, NULLIF($4, ''), NULLIF($5, ''), TRUE)
+				VALUES ($1, $2, $3, NULLIF($4, ''), NULLIF($5, ''), NULLIF($6, ''), TRUE)
 				ON CONFLICT (user_id) DO UPDATE SET
 					school_id = EXCLUDED.school_id,
 					nama_lengkap = EXCLUDED.nama_lengkap,
 					nip = COALESCE(NULLIF(EXCLUDED.nip, ''), teachers.nip),
 					jenis_kelamin = COALESCE(NULLIF(EXCLUDED.jenis_kelamin, ''), teachers.jenis_kelamin),
+					no_whatsapp = COALESCE(NULLIF(EXCLUDED.no_whatsapp, ''), teachers.no_whatsapp),
 					is_active = TRUE,
 					updated_at = NOW()
 				RETURNING id
-			`, newUserID, schoolID, req.FullName, req.NIP, req.JenisKelamin).Scan(&teacherID)
+			`, newUserID, schoolID, req.FullName, req.NIP, req.JenisKelamin, req.NoWhatsApp).Scan(&teacherID)
 
 			if err != nil {
 				log.Printf("[CREATE TEACHER] Gagal insert teachers untuk user=%s: %v", newUserID, err)
@@ -8063,6 +8389,7 @@ func SetupRoutes(r *gin.Engine) {
 				"full_name":     req.FullName,
 				"nip":           req.NIP,
 				"jenis_kelamin": req.JenisKelamin,
+				"no_whatsapp":   req.NoWhatsApp,
 				"role_in_school": roleInSchool,
 				"is_new_user":   true,
 			})
@@ -8084,6 +8411,8 @@ func SetupRoutes(r *gin.Engine) {
 				NamaGuru     string `json:"nama_guru" binding:"required"`
 				NIP          string `json:"nip"`
 				JenisKelamin string `json:"jenis_kelamin" binding:"omitempty,oneof=L P"`
+				NoWhatsApp   string `json:"no_whatsapp"`
+				RoleInSchool string `json:"role_in_school"`
 			}
 
 			if err := c.ShouldBindJSON(&req); err != nil {
@@ -8114,9 +8443,9 @@ func SetupRoutes(r *gin.Engine) {
 			// 1. Update tabel teachers
 			_, err = tx.Exec(`
 				UPDATE teachers 
-				SET nama_lengkap = $1, nip = NULLIF($2, ''), jenis_kelamin = NULLIF($3, ''), updated_at = NOW()
-				WHERE id = $4 AND school_id = $5
-			`, req.NamaGuru, req.NIP, req.JenisKelamin, teacherID, schoolID)
+				SET nama_lengkap = $1, nip = NULLIF($2, ''), jenis_kelamin = NULLIF($3, ''), no_whatsapp = NULLIF($4, ''), updated_at = NOW()
+				WHERE id = $5 AND school_id = $6
+			`, req.NamaGuru, req.NIP, req.JenisKelamin, req.NoWhatsApp, teacherID, schoolID)
 
 			if err != nil {
 				c.JSON(http.StatusInternalServerError, gin.H{"error": "Gagal update data guru: " + err.Error()})
@@ -8131,9 +8460,20 @@ func SetupRoutes(r *gin.Engine) {
 			`, req.NamaGuru, req.NIP, req.JenisKelamin, userID)
 
 			if err != nil {
-				// Kalau gagal update profile, kita bisa lanjut saja atau rollback. 
-				// Di sini kita log saja agar tidak menggagalkan update utama.
 				fmt.Printf("[UPDATE TEACHER] Gagal update profil untuk user=%s: %v\n", userID, err)
+			}
+
+			if req.RoleInSchool != "" {
+				_, err = tx.Exec(`
+					UPDATE school_members 
+					SET role_in_school = $1, updated_at = NOW()
+					WHERE user_id = $2 AND school_id = $3
+				`, req.RoleInSchool, userID, schoolID)
+				
+				if err != nil {
+					c.JSON(http.StatusInternalServerError, gin.H{"error": "Gagal update peran guru: " + err.Error()})
+					return
+				}
 			}
 
 			if err := tx.Commit(); err != nil {
@@ -9169,6 +9509,83 @@ func SetupRoutes(r *gin.Engine) {
 			}
 
 			c.JSON(http.StatusOK, gin.H{"message": "Jadwal beserta seluruh baris pelajaran berhasil dihapus"})
+		})
+
+		// --- ENDPOINT: Activate Timetable ---
+		api.PATCH("/school-admin/timetables/:id/activate", func(c *gin.Context) {
+			schoolID, err := getSchoolIDFromUser(c)
+			if err != nil {
+				c.JSON(http.StatusForbidden, gin.H{"error": err.Error()})
+				return
+			}
+
+			timetableID := c.Param("id")
+
+			var currentStatus string
+			err = database.DB.QueryRow(`
+				SELECT status FROM class_timetables WHERE id = $1 AND school_id = $2
+			`, timetableID, schoolID).Scan(&currentStatus)
+
+			if err != nil {
+				c.JSON(http.StatusNotFound, gin.H{"error": "Jadwal tidak ditemukan"})
+				return
+			}
+
+			if currentStatus == "active" {
+				c.JSON(http.StatusConflict, gin.H{"error": "Jadwal sudah aktif"})
+				return
+			}
+
+	
+			var entryCount int
+			_ = database.DB.QueryRow(`SELECT COUNT(*) FROM timetable_entries WHERE timetable_id = $1`, timetableID).Scan(&entryCount)
+			
+			// (Abaikan validasi ini jika Anda ingin mengizinkan jadwal kosong diaktifkan)
+			// if entryCount == 0 {
+			// 	c.JSON(http.StatusBadRequest, gin.H{"error": "Tidak bisa mengaktifkan jadwal yang masih kosong"})
+			// 	return
+			// }
+
+			// 3. (PENTING) Nonaktifkan jadwal lain di sub-kelas dan tahun akademik yang sama
+			// Karena 1 kelas hanya boleh punya 1 jadwal aktif di semester yang sama.
+			tx, err := database.DB.Begin()
+			if err != nil {
+				c.JSON(http.StatusInternalServerError, gin.H{"error": "Gagal memulai transaksi"})
+				return
+			}
+			defer tx.Rollback()
+
+			var subGroupID, academicYearID, semester string
+			_ = tx.QueryRow(`SELECT class_sub_group_id, academic_year_id, semester FROM class_timetables WHERE id = $1`, timetableID).Scan(&subGroupID, &academicYearID, &semester)
+
+			_, err = tx.Exec(`
+				UPDATE class_timetables 
+				SET status = 'archived', updated_at = NOW()
+				WHERE class_sub_group_id = $1 AND academic_year_id = $2 AND semester = $3 AND id <> $4
+			`, subGroupID, academicYearID, semester, timetableID)
+			
+			if err != nil {
+				c.JSON(http.StatusInternalServerError, gin.H{"error": "Gagal mengarsipkan jadwal lama: " + err.Error()})
+				return
+			}
+
+			// 4. Aktifkan jadwal ini
+			_, err = tx.Exec(`
+				UPDATE class_timetables 
+				SET status = 'active', updated_at = NOW()
+				WHERE id = $1
+			`, timetableID)
+			if err != nil {
+				c.JSON(http.StatusInternalServerError, gin.H{"error": "Gagal mengaktifkan jadwal: " + err.Error()})
+				return
+			}
+
+			if err := tx.Commit(); err != nil {
+				c.JSON(http.StatusInternalServerError, gin.H{"error": "Gagal commit"})
+				return
+			}
+
+			c.JSON(http.StatusOK, gin.H{"message": "Jadwal berhasil diaktifkan"})
 		})
 
 		// --- ENDPOINT: Create Entry (Baris Jadwal) ---
@@ -12343,6 +12760,7 @@ func SetupRoutes(r *gin.Engine) {
 			})
 		})
 
+		//Udah terpisah dari route utama
 		api.GET("/teacher/personal-students", teacher.ListPersonalStudents)
 		api.GET("/teacher/personal-students/:id", teacher.GetPersonalStudent)
 		api.POST("/teacher/personal-students", teacher.CreatePersonalStudent)
