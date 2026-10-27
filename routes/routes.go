@@ -7687,6 +7687,23 @@ func SetupRoutes(r *gin.Engine) {
 				return
 			}
 
+			// [TAMBAH] Link ke school_member_roles
+			_, errRole := database.DB.Exec(`
+				INSERT INTO school_member_roles (member_id, role_id, is_active, started_at)
+				SELECT $1, sr.id, TRUE, NOW()
+				FROM school_roles sr
+				WHERE sr.code = $2
+				ON CONFLICT (member_id, role_id) DO UPDATE SET
+					is_active = TRUE,
+					ended_at = NULL
+			`, membershipID, roleInSchool)
+
+			if errRole != nil {
+				log.Printf("[JOIN SCHOOL] Gagal assign role ke school_member_roles: %v", errRole)
+			}
+
+			
+
 			// Update teacher_type menjadi hybrid/b2b
 			_, _ = database.DB.Exec(`
 				UPDATE profiles 
@@ -8090,6 +8107,20 @@ func SetupRoutes(r *gin.Engine) {
 			if err != nil {
 				c.JSON(http.StatusInternalServerError, gin.H{"error": "Gagal menyimpan membership: " + err.Error()})
 				return
+			}
+
+			_, errRole := database.DB.Exec(`
+				INSERT INTO school_member_roles (member_id, role_id, is_active, started_at)
+				SELECT $1, sr.id, TRUE, NOW()
+				FROM school_roles sr
+				WHERE sr.code = $2
+				ON CONFLICT (member_id, role_id) DO UPDATE SET
+					is_active = TRUE,
+					ended_at = NULL
+			`, membershipID, roleInSchool)
+
+			if errRole != nil {
+				log.Printf("[JOIN SCHOOL] Gagal assign role ke school_member_roles: %v", errRole)
 			}
 
 			// Update teacher_type jadi b2b/hybrid
@@ -8528,6 +8559,21 @@ func SetupRoutes(r *gin.Engine) {
 			if err != nil {
 				c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 				return
+			}
+
+			// [TAMBAH] Link ke school_member_roles
+			_, errRole := database.DB.Exec(`
+				INSERT INTO school_member_roles (member_id, role_id, is_active, started_at)
+				SELECT $1, sr.id, TRUE, NOW()
+				FROM school_roles sr
+				WHERE sr.code = $2
+				ON CONFLICT (member_id, role_id) DO UPDATE SET
+					is_active = TRUE,
+					ended_at = NULL
+			`, membershipID, roleInSchool)
+
+			if errRole != nil {
+				log.Printf("[JOIN SCHOOL] Gagal assign role ke school_member_roles: %v", errRole)
 			}
 
 			// Update teacher_type
