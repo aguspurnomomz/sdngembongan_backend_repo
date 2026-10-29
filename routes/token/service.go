@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"log"
 
-	"teach_partner_dev/database"
+	"gembongan_dev_backend/database"
 )
 
 type ChargeResult struct {

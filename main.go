@@ -9,8 +9,8 @@ import (
 	"github.com/gin-contrib/cors"
 	"github.com/gin-gonic/gin"
 	"github.com/joho/godotenv"
-	"teach_partner_dev/database"
-	"teach_partner_dev/routes"
+	"gembongan_dev_backend/database"
+	"gembongan_dev_backend/routes"
 
 	sentrygin "github.com/getsentry/sentry-go/gin"
 )

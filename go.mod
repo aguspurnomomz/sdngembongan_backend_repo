@@ -1,4 +1,4 @@
-module teach_partner_dev
+module gembongan_dev_backend
 
 go 1.25.5
 

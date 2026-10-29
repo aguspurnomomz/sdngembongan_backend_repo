@@ -7,8 +7,8 @@ import (
 	"strings"
 	"time"
 
-	"teach_partner_dev/database"
-	"teach_partner_dev/routes/helpers"
+	"gembongan_dev_backend/database"
+	"gembongan_dev_backend/routes/helpers"
 
 	"github.com/gin-gonic/gin"
 )

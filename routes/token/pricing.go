@@ -5,7 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 
-	"teach_partner_dev/database"
+	"gembongan_dev_backend/database"
 )
 
 

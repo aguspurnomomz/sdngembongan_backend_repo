@@ -7,7 +7,7 @@ import (
 	"log"
 	"net/http"
 
-	"teach_partner_dev/database"
+	"gembongan_dev_backend/database"
 
 	"github.com/gin-gonic/gin"
 	"github.com/golang-jwt/jwt/v5"

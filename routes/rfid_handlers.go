@@ -6,7 +6,7 @@ import (
 	"net/http"
 	"strings"
 
-	"teach_partner_dev/database"
+	"gembongan_dev_backend/database"
 
 	"github.com/gin-gonic/gin"
 )
@@ -531,9 +531,15 @@ func HandleListRFIDCards(c *gin.Context) {
 		args = append(args, "%"+search+"%")
 		idx++
 	}
-	if hasCard == "yes" {
+	// if hasCard == "yes" {
+	// 	query += " AND src.id IS NOT NULL"
+	// } else if hasCard == "no" {
+	// 	query += " AND src.id IS NULL"
+	// }
+	switch hasCard {
+	case "yes":
 		query += " AND src.id IS NOT NULL"
-	} else if hasCard == "no" {
+	case "no":
 		query += " AND src.id IS NULL"
 	}
 

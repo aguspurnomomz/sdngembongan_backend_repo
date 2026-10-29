@@ -10,9 +10,9 @@ import (
 	"strings"
 	"time"
 
-	"teach_partner_dev/database"
-	"teach_partner_dev/routes/helpers"
-	tokensvc "teach_partner_dev/routes/token"
+	"gembongan_dev_backend/database"
+	"gembongan_dev_backend/routes/helpers"
+	tokensvc "gembongan_dev_backend/routes/token"
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/generative-ai-go/genai"
