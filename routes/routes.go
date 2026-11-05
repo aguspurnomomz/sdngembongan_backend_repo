@@ -19,6 +19,7 @@ import (
 	//"teach_partner_dev/routes/token"
 	"gembongan_dev_backend/routes/school"
 	"gembongan_dev_backend/routes/teacher"
+	"gembongan_dev_backend/routes/teachingjournal"
 
 	"time"
 
@@ -1924,6 +1925,25 @@ func SetupRoutes(r *gin.Engine) {
 		api.POST("/school-admin/teachers/:id/roles", AssignRoleToTeacher)
 		api.DELETE("/school-admin/teachers/:id/roles/:roleId", RemoveRoleFromTeacher)
 		api.GET("/school-admin/teachers/:id/roles", GetTeacherRoles)
+
+		// ==========================================
+		// TEACHING JOURNAL — guru
+		// ==========================================
+		api.GET("/teacher/journals/schedule", teachingjournal.GetTeacherSchedule)
+		api.GET("/teacher/journals", teachingjournal.ListTeacherJournals)
+		api.GET("/teacher/journals/stats", teachingjournal.GetTeacherJournalStats)
+		api.GET("/teacher/journals/:id", teachingjournal.GetTeachingJournal)
+		api.POST("/teacher/journals", teachingjournal.CreateTeachingJournal)
+		api.PUT("/teacher/journals/:id", teachingjournal.UpdateTeachingJournal)
+		api.DELETE("/teacher/journals/:id", teachingjournal.DeleteTeachingJournal)
+		api.POST("/teacher/journals/:id/submit", teachingjournal.SubmitTeachingJournal)
+
+		// ==========================================
+		// TEACHING JOURNAL — admin sekolah
+		// ==========================================
+		api.GET("/school-admin/journals", teachingjournal.ListSchoolJournals)
+		api.GET("/school-admin/journals/rekap", teachingjournal.GetSchoolJournalRecap)
+		api.PATCH("/school-admin/journals/:id/verify", teachingjournal.VerifyTeachingJournal)
 
 		// ambil dari tabel auth supabasenya
 		api.POST("/auth/notify-password-changed", func(c *gin.Context) {
