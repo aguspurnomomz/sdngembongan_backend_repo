@@ -6544,6 +6544,23 @@ func SetupRoutes(r *gin.Engine) {
 		// POST /api/school-admin/exam-live-sessions/:sessionId/warn
 		api.POST("/school-admin/exam-live-sessions/:sessionId/warn", exam.StudentExamWarnRealtime)
 
+		// ===== EXAM ROOMS (MASTER) =====
+		api.GET("/school-admin/exam-rooms", exam.ListExamRooms)
+		api.POST("/school-admin/exam-rooms", exam.CreateExamRoom)
+		api.PUT("/school-admin/exam-rooms/:id", exam.UpdateExamRoom)
+		api.DELETE("/school-admin/exam-rooms/:id", exam.DeleteExamRoom)
+
+		// api.POST("/school-admin/exam-schedules/:scheduleId/auto-assign-rooms", exam.AutoAssignStudentsToRooms)
+
+		// ===== ROOM PLACEMENT (per jadwal ujian) =====
+		api.GET("/school-admin/exam-schedules/:id/students-placement", exam.GetStudentsPlacementData)
+		api.POST("/school-admin/exam-schedules/:id/assign-room", exam.AssignStudentsToRoom)
+		api.POST("/school-admin/exam-schedules/:id/auto-assign-rooms", exam.AutoAssignStudentsToRooms)
+		api.DELETE("/school-admin/exam-schedules/:id/rooms/:roomId/students/:studentId", exam.RemoveStudentFromRoom)
+
+		// ===== EXAM CARDS =====
+		api.GET("/school-admin/exam-schedules/:id/cards", exam.GetExamCardsData)
+
 		//Udah terpisah dari route utama
 		api.GET("/teacher/personal-students", teacher.ListPersonalStudents)
 		api.GET("/teacher/personal-students/:id", teacher.GetPersonalStudent)
