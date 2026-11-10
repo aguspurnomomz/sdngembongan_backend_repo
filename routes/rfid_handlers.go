@@ -74,7 +74,6 @@ func processAttendanceScan(
 	forceMode string,
 ) (*scanResult, error) {
 
-
 	tx, err := database.DB.Begin()
 	if err != nil {
 		return nil, fmt.Errorf("gagal mulai transaksi: %w", err)
@@ -85,6 +84,7 @@ func processAttendanceScan(
 	var sessionClassGroupID, sessionClassSubGroupID sql.NullString
 	var requireCheckOut bool
 	var ciStart, ciEnd, coStart, coEnd sql.NullString
+	var autoCloseAt sql.NullTime
 
 	err = tx.QueryRow(`
 		SELECT 
@@ -92,7 +92,8 @@ func processAttendanceScan(
 			ases.class_group_id, ases.class_sub_group_id,
 			sh.check_in_start::text, sh.check_in_end::text,
 			sh.require_check_out,
-			sh.check_out_start::text, sh.check_out_end::text
+			sh.check_out_start::text, sh.check_out_end::text,
+			ases.auto_close_at
 		FROM attendance_sessions ases
 		JOIN attendance_shifts sh ON ases.shift_id = sh.id
 		WHERE ases.id = $1 AND ases.school_id = $2
@@ -102,6 +103,7 @@ func processAttendanceScan(
 		&sessionClassGroupID, &sessionClassSubGroupID,
 		&ciStart, &ciEnd,
 		&requireCheckOut, &coStart, &coEnd,
+		&autoCloseAt,
 	)
 
 	if err != nil {
@@ -140,52 +142,30 @@ func processAttendanceScan(
 	var studentClassGroupID, studentClassSubGroupID sql.NullString
 
 	switch scanSource {
-	// case "qr":
-	// 	err = tx.QueryRow(`
-	// 		SELECT s.id, s.full_name, COALESCE(s.nisn,''), COALESCE(s.photo_url,''),
-	// 		       s.class_group_id, s.class_sub_group_id
-	// 		FROM student_qr_codes sqc
-	// 		JOIN students s ON sqc.student_id = s.id
-	// 		WHERE sqc.qr_token = $1 AND sqc.school_id = $2 AND sqc.is_active = TRUE
-	// 	`, scanValue, schoolID).Scan(
-	// 		&studentID, &studentName, &studentNISN, &photoURL,
-	// 		&studentClassGroupID, &studentClassSubGroupID,
-	// 	)
 	case "qr":
-    err = tx.QueryRow(`
-        SELECT s.id, s.full_name, COALESCE(s.nisn,''),
-               s.class_group_id, s.class_sub_group_id
-        FROM student_qr_codes sqc
-        JOIN students s ON sqc.student_id = s.id
-        WHERE sqc.qr_token = $1 AND sqc.school_id = $2 AND sqc.is_active = TRUE
-    `, scanValue, schoolID).Scan(
-        &studentID, &studentName, &studentNISN,
-        &studentClassGroupID, &studentClassSubGroupID,
-    )
-    photoURL = ""
-	// case "rfid":
-	// 	err = tx.QueryRow(`
-	// 		SELECT s.id, s.full_name, COALESCE(s.nisn,''), COALESCE(s.photo_url,''),
-	// 		       s.class_group_id, s.class_sub_group_id
-	// 		FROM student_rfid_cards src
-	// 		JOIN students s ON src.student_id = s.id
-	// 		WHERE src.rfid_uid = $1 AND src.school_id = $2 AND src.is_active = TRUE
-	// 	`, scanValue, schoolID).Scan(
-	// 		&studentID, &studentName, &studentNISN, &photoURL,
-	// 		&studentClassGroupID, &studentClassSubGroupID,
-	// 	)
+		err = tx.QueryRow(`
+			SELECT s.id, s.full_name, COALESCE(s.nisn,''),
+			       s.class_group_id, s.class_sub_group_id
+			FROM student_qr_codes sqc
+			JOIN students s ON sqc.student_id = s.id
+			WHERE sqc.qr_token = $1 AND sqc.school_id = $2 AND sqc.is_active = TRUE
+		`, scanValue, schoolID).Scan(
+			&studentID, &studentName, &studentNISN,
+			&studentClassGroupID, &studentClassSubGroupID,
+		)
+		photoURL = ""
 	case "rfid":
-    err = tx.QueryRow(`
-        SELECT s.id, s.full_name, COALESCE(s.nisn,''),
-               s.class_group_id, s.class_sub_group_id
-        FROM student_rfid_cards src
-        JOIN students s ON src.student_id = s.id
-        WHERE src.rfid_uid = $1 AND src.school_id = $2 AND src.is_active = TRUE
-    `, scanValue, schoolID).Scan(
-        &studentID, &studentName, &studentNISN,
-        &studentClassGroupID, &studentClassSubGroupID,
-    )
-    photoURL = ""
+		err = tx.QueryRow(`
+			SELECT s.id, s.full_name, COALESCE(s.nisn,''),
+			       s.class_group_id, s.class_sub_group_id
+			FROM student_rfid_cards src
+			JOIN students s ON src.student_id = s.id
+			WHERE src.rfid_uid = $1 AND src.school_id = $2 AND src.is_active = TRUE
+		`, scanValue, schoolID).Scan(
+			&studentID, &studentName, &studentNISN,
+			&studentClassGroupID, &studentClassSubGroupID,
+		)
+		photoURL = ""
 	default:
 		return &scanResult{
 			Success:      false,
@@ -237,27 +217,151 @@ func processAttendanceScan(
 				WHERE session_id = $1 AND student_id = $2 AND record_type = 'check_out')
 	`, sessionID, studentID).Scan(&hasCheckIn, &hasCheckOut)
 
-	// Tentukan mode
-	mode := ""
+	// ==========================================
+	// 1. TENTUKAN MODE (DARI RECORD, BUKAN JAM)
+	// ==========================================
+	var mode string
 	if forceMode == "check_in" || forceMode == "check_out" {
+		// Validasi force mode terhadap state
+		if forceMode == "check_in" && hasCheckIn {
+			return &scanResult{
+				Success:      false,
+				ErrorCode:    "duplicate",
+				ErrorMessage: "Siswa sudah tercatat masuk. Tidak bisa check-in dua kali.",
+				StudentName:  studentName,
+				StudentNISN:  studentNISN,
+			}, nil
+		}
+		if forceMode == "check_out" && !hasCheckIn {
+			return &scanResult{
+				Success:      false,
+				ErrorCode:    "invalid_force_mode",
+				ErrorMessage: "Siswa belum tercatat masuk. Tidak bisa check-out.",
+				StudentName:  studentName,
+				StudentNISN:  studentNISN,
+			}, nil
+		}
+		if forceMode == "check_out" && hasCheckOut {
+			return &scanResult{
+				Success:      false,
+				ErrorCode:    "duplicate",
+				ErrorMessage: "Siswa sudah tercatat pulang di sesi ini.",
+				StudentName:  studentName,
+				StudentNISN:  studentNISN,
+			}, nil
+		}
 		mode = forceMode
 	} else {
+		// Logika otomatis berdasarkan record
 		if !hasCheckIn {
 			mode = "check_in"
 		} else if requireCheckOut && !hasCheckOut {
 			mode = "check_out"
 		} else {
+			errMsg := "Siswa sudah tercatat sebelumnya"
+			if requireCheckOut && hasCheckOut {
+				errMsg = "Siswa sudah tercatat masuk dan pulang di sesi ini"
+			} else if !requireCheckOut && hasCheckIn {
+				errMsg = "Siswa sudah tercatat masuk. Shift ini tidak memerlukan scan pulang."
+			}
 			return &scanResult{
 				Success:      false,
 				ErrorCode:    "duplicate",
-				ErrorMessage: "Siswa sudah tercatat sebelumnya",
+				ErrorMessage: errMsg,
 				StudentName:  studentName,
 				StudentNISN:  studentNISN,
 			}, nil
 		}
 	}
 
+	// ==========================================
+	// 2. VALIDASI WINDOW (TOLAK DI LUAR JAM)
+	// ==========================================
 	now := nowJakarta()
+
+	// Cek auto_close_at
+	if autoCloseAt.Valid && now.After(autoCloseAt.Time) {
+		return &scanResult{
+			Success:      false,
+			ErrorCode:    "session_expired",
+			ErrorMessage: "Sesi absensi sudah melewati batas waktu. Hubungi guru piket.",
+			StudentName:  studentName,
+			StudentNISN:  studentNISN,
+		}, nil
+	}
+
+	currentTimeStr := now.Format("15:04:05")
+	currentMin := timeStrToMinutes(currentTimeStr)
+
+	switch mode {
+	case "check_in":
+		if !ciStart.Valid || !ciEnd.Valid {
+			return &scanResult{
+				Success:      false,
+				ErrorCode:    "invalid_shift_config",
+				ErrorMessage: "Konfigurasi shift tidak lengkap",
+				StudentName:  studentName,
+				StudentNISN:  studentNISN,
+			}, nil
+		}
+		startMin := timeStrToMinutes(ciStart.String)
+		endMin := timeStrToMinutes(ciEnd.String)
+
+		if currentMin < startMin {
+			return &scanResult{
+				Success:      false,
+				ErrorCode:    "too_early",
+				ErrorMessage: fmt.Sprintf("Belum waktunya absen masuk. Absen dibuka pukul %s.", ciStart.String[:5]),
+				StudentName:  studentName,
+				StudentNISN:  studentNISN,
+			}, nil
+		}
+		if currentMin > endMin {
+			return &scanResult{
+				Success:      false,
+				ErrorCode:    "check_in_closed",
+				ErrorMessage: fmt.Sprintf("Waktu absen masuk sudah berakhir pukul %s. Hubungi guru piket untuk absensi manual.", ciEnd.String[:5]),
+				StudentName:  studentName,
+				StudentNISN:  studentNISN,
+			}, nil
+		}
+
+	case "check_out":
+		if !coStart.Valid || !coEnd.Valid {
+			return &scanResult{
+				Success:      false,
+				ErrorCode:    "no_check_out",
+				ErrorMessage: "Shift ini tidak support check-out",
+				StudentName:  studentName,
+				StudentNISN:  studentNISN,
+			}, nil
+		}
+		startMin := timeStrToMinutes(coStart.String)
+		endMin := timeStrToMinutes(coEnd.String)
+
+		if currentMin < startMin {
+			return &scanResult{
+				Success:      false,
+				ErrorCode:    "too_early_checkout",
+				ErrorMessage: fmt.Sprintf("Belum waktunya absen pulang. Absen pulang dibuka pukul %s.", coStart.String[:5]),
+				StudentName:  studentName,
+				StudentNISN:  studentNISN,
+			}, nil
+		}
+		if currentMin > endMin {
+			return &scanResult{
+				Success:      false,
+				ErrorCode:    "check_out_closed",
+				ErrorMessage: fmt.Sprintf("Waktu absen pulang sudah berakhir pukul %s. Hubungi guru piket untuk absensi manual.", coEnd.String[:5]),
+				StudentName:  studentName,
+				StudentNISN:  studentNISN,
+			}, nil
+		}
+	}
+
+	// ==========================================
+	// 3. HITUNG STATUS & SIMPAN
+	// ==========================================
 	currentTime := fmt.Sprintf("%02d:%02d:%02d", now.Hour(), now.Minute(), now.Second())
 
 	var status string
@@ -267,17 +371,9 @@ func processAttendanceScan(
 		status = computeCheckInStatusFromStrings(ciStart.String, ciEnd.String, currentTime)
 		deviation = computeCheckInDeviation(ciStart.String, ciEnd.String, currentTime)
 	} else {
-		if !coStart.Valid || !coEnd.Valid {
-			return &scanResult{
-				Success:      false,
-				ErrorCode:    "no_check_out",
-				ErrorMessage: "Shift ini tidak support check-out",
-			}, nil
-		}
 		status = computeCheckOutStatusFromStrings(coStart.String, coEnd.String, currentTime)
 	}
 
-	
 	var rfidUIDVal interface{} = nil
 	if scanSource == "rfid" {
 		rfidUIDVal = scanValue
@@ -387,7 +483,7 @@ func processAttendanceScan(
 	}
 
 	go func(sid, stuid, sessid, recid, evType, st string) {
-		defer func() { recover() }() 
+		defer func() { recover() }()
 		enqueueWANotification(sid, stuid, sessid, recid, evType, st)
 	}(schoolID, studentID, sessionID, recordID, mode, status)
 
