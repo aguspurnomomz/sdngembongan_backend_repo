@@ -8,12 +8,12 @@ import (
 	"time"
 
 	"gembongan_dev_backend/database"
-	"gembongan_dev_backend/middleware"
+	"gembongan_dev_backend/internal/middleware"
 
 	"github.com/gin-gonic/gin"
 )
 
-// GET /api/school-admin/timetables
+
 func ListTimetables(c *gin.Context) {
 	schoolID, err := middleware.GetSchoolIDFromUser(c)
 	if err != nil {

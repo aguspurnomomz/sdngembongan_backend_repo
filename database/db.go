@@ -1,22 +1,22 @@
 package database
 
 import (
+	"context"
 	"database/sql"
 	"fmt"
 	"log"
-	"os"
+	"time"
 
 	_ "github.com/lib/pq"
 )
 
 var DB *sql.DB
 
-func ConnectDB() {
-	dsn := os.Getenv("SUPABASE_DB_URL")
+
+func ConnectDB(dsn string) {
 	if dsn == "" {
-		log.Fatal("SUPABASE_DB_URL belum diatur di file .env")
+		log.Fatal("SUPABASE_DB_URL belum diatur")
 	}
-	
 
 	var err error
 	DB, err = sql.Open("postgres", dsn)
@@ -24,7 +24,16 @@ func ConnectDB() {
 		log.Fatalf("Gagal membuka koneksi database: %v", err)
 	}
 
-	if err = DB.Ping(); err != nil {
+	
+	DB.SetMaxOpenConns(25)
+	DB.SetMaxIdleConns(5)
+	DB.SetConnMaxLifetime(30 * time.Minute)
+	DB.SetConnMaxIdleTime(5 * time.Minute)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	if err = DB.PingContext(ctx); err != nil {
 		log.Fatalf("Gagal melakukan ping ke Supabase: %v", err)
 	}
 

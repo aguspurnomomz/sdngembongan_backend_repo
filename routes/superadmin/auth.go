@@ -20,7 +20,6 @@ import (
 )
 
 
-// getJWTAdminSecret 
 func getJWTAdminSecret() ([]byte, error) {
 	secret := os.Getenv("JWT_ADMIN_SECRET")
 	if secret == "" {
@@ -305,7 +304,6 @@ func Login(c *gin.Context) {
 	})
 }
 
-// POST /api/superadmin/change-password
 func ChangePassword(c *gin.Context) {
 	var adminID int
 

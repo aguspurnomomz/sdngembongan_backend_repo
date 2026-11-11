@@ -9,7 +9,7 @@ import (
 	"time"
 
 	"gembongan_dev_backend/database"
-	"gembongan_dev_backend/middleware" 
+	"gembongan_dev_backend/internal/middleware" 
 
 	"github.com/gin-gonic/gin"
 )
