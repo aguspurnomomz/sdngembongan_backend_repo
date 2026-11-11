@@ -70,7 +70,7 @@ func SetupRoutes(r *gin.Engine) {
 		adminApi.GET("/school-roles/:id/permissions", superadmin.GetRolePermissions)
 		adminApi.PUT("/school-roles/:id/permissions", superadmin.UpdateRolePermissions)
 	}
-	// Endpoint yang diakses siswa (uji coba ujian)
+	// Endpoint yang diakses siswa
 	apiPub := r.Group("/api")
 	{
 		apiPub.GET("/public/personal-exam/access/:code", public.GetPersonalExamByCode)
